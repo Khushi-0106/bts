@@ -1,3 +1,7 @@
+// ============================================================================
+// Analytics.jsx — Fleet Condition Intelligence & Comparison
+// ============================================================================
+
 import React, { useMemo } from 'react'
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -28,10 +32,10 @@ function HealthTrendChart() {
   }, [assetType])
 
   return (
-    <div className="panel chart-card">
+    <div className="panel chart-card fade-in">
       <div className="chart-header">
         <div className="chart-title-group">
-          <span className="chart-title">Health Trend</span>
+          <span className="chart-title">Health Score Historical Evolution</span>
           <span className="chart-latest mono">{health?.score}%</span>
         </div>
       </div>
@@ -46,7 +50,7 @@ function HealthTrendChart() {
           <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
           <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#565d6b' }} axisLine={false} tickLine={false} minTickGap={30} />
           <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#565d6b' }} axisLine={false} tickLine={false} width={30} />
-          <Tooltip contentStyle={{ background: '#1a1e25', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, fontSize: 12 }} />
+          <Tooltip contentStyle={{ background: '#14171d', border: '1px solid rgba(255,255,255,0.18)', borderRadius: 8, fontSize: 12 }} />
           <Area type="monotone" dataKey="value" stroke="#2fd983" strokeWidth={2} fill="url(#grad-health)" dot={false} />
         </AreaChart>
       </ResponsiveContainer>
@@ -58,21 +62,24 @@ function ComparisonChart() {
   const { assets, assetId, health } = useAssetData()
   const data = assets.map(a => ({
     name: ASSET_TYPES[a.type].short,
+    id: a.id,
     value: a.id === assetId && health ? health.score : REFERENCE_HEALTH[a.id],
   }))
 
   const colorFor = (v) => (v >= 80 ? '#2fd983' : v >= 55 ? '#f5a93f' : '#f1495b')
 
   return (
-    <div className="panel panel-pad">
-      <div className="section-title">Asset Comparison</div>
-      <p className="section-sub">Current Asset Health Score across the demo fleet. Shown for comparison only — not a performance ranking.</p>
+    <div className="panel panel-pad fade-in">
+      <div className="section-title">Fleet Machine Health Comparison</div>
+      <p className="section-sub">
+        Normalized condition scores across testbed and fleet assets. Physical testbed active on AST-IND-001.
+      </p>
       <ResponsiveContainer width="100%" height={240}>
         <BarChart data={data} margin={{ top: 10, right: 10, left: -18, bottom: 0 }}>
           <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
           <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#8b93a1' }} axisLine={false} tickLine={false} />
           <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#565d6b' }} axisLine={false} tickLine={false} width={30} />
-          <Tooltip contentStyle={{ background: '#1a1e25', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, fontSize: 12 }} />
+          <Tooltip contentStyle={{ background: '#14171d', border: '1px solid rgba(255,255,255,0.18)', borderRadius: 8, fontSize: 12 }} />
           <Bar dataKey="value" radius={[6, 6, 0, 0]}>
             {data.map((d, i) => <Cell key={i} fill={colorFor(d.value)} />)}
           </Bar>
@@ -89,15 +96,17 @@ export default function Analytics() {
   return (
     <div className="page-content">
       <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 800, margin: '0 0 4px' }}>Analytics</h1>
-        <p style={{ color: 'var(--text-dim)', fontSize: 14, margin: 0 }}>Trend intelligence for the selected asset, and comparative context across the fleet.</p>
+        <h1 style={{ fontSize: 24, fontWeight: 800, margin: '0 0 4px' }}>Analytics &amp; Fleet Intelligence</h1>
+        <p style={{ color: 'var(--text-dim)', fontSize: 14, margin: 0 }}>
+          Longitudinal trend intelligence and cross-asset baseline comparison.
+        </p>
       </div>
 
-      <div className="grid grid-2" style={{ marginBottom: 18 }}>
+      <div className="grid grid-2" style={{ marginBottom: 22 }}>
         <HealthTrendChart />
         <SensorChart paramKey="temperature" color="#f5a93f" />
         <SensorChart paramKey="vibration" color="#7c8cff" />
-        <SensorChart paramKey={reading.cycles !== undefined ? 'cycles' : 'current'} color="#8b93a1" />
+        <SensorChart paramKey="rpm" color="#2fd983" title="Rotation Speed" unitOverride="RPM" />
       </div>
 
       <ComparisonChart />

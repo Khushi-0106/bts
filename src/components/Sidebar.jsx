@@ -1,24 +1,34 @@
+// ============================================================================
+// Sidebar.jsx — MechSight Main Navigation & Sensor Telemetry Status
+// ============================================================================
+
 import React from 'react'
 import { NavLink } from 'react-router-dom'
+import { useAssetData } from '../context/DataContext.jsx'
 
 const NAV = [
-  { to: '/', label: 'Dashboard', icon: '◧' },
-  { to: '/assets', label: 'Assets', icon: '▤' },
-  { to: '/monitoring', label: 'Live Monitoring', icon: '◎' },
-  { to: '/analytics', label: 'Analytics', icon: '▲' },
+  { to: '/', label: 'Overview Dashboard', icon: '◧' },
+  { to: '/history', label: 'Condition History', icon: '▤' },
+  { to: '/conditions', label: 'Operating Conditions', icon: '◎' },
+  { to: '/graphs', label: 'Condition Graphs', icon: '▲' },
+  { to: '/timeline', label: 'Timeline & Events', icon: '◷' },
+  { to: '/sessions', label: 'Session History', icon: '⏱' },
   { to: '/anomaly-detection', label: 'Anomaly Detection', icon: '✦' },
-  { to: '/maintenance', label: 'Maintenance', icon: '✚' },
-  { to: '/passport', label: 'Digital Asset Passport', icon: '▥' },
-  { to: '/alerts', label: 'Alerts', icon: '◆' },
-  { to: '/settings', label: 'Settings', icon: '⚙' },
+  { to: '/maintenance', label: 'Maintenance Intelligence', icon: '✚' },
+  { to: '/passport', label: 'Digital Machine Passport', icon: '▥' },
+  { to: '/alerts', label: 'Alert Center', icon: '◆' },
+  { to: '/assets', label: 'Fleet Assets', icon: '⚙' },
+  { to: '/settings', label: 'ESP32 & Settings', icon: '🛠' },
 ]
 
 export default function Sidebar() {
+  const { dataSource } = useAssetData()
+
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <div className="sidebar-logo">ASSETIQ</div>
-        <div className="sidebar-tagline">AIoT Asset Intelligence</div>
+        <div className="sidebar-logo">MECHSIGHT</div>
+        <div className="sidebar-tagline">AIoT Machine Intelligence</div>
       </div>
 
       <nav className="sidebar-nav">
@@ -37,15 +47,26 @@ export default function Sidebar() {
 
       <div className="sidebar-status">
         <div className="status-line">
-          <span className="val"><span className="pulse-dot" /> SYSTEM ONLINE</span>
+          <span className="label">SYSTEM</span>
+          <span className="val"><span className="pulse-dot" /> ONLINE</span>
         </div>
         <div className="status-line">
-          <span className="label">ESP32</span>
-          <span className="val" style={{ color: 'var(--accent)' }}>CONNECTED</span>
+          <span className="label">DS18B20 (TEMP)</span>
+          <span className="val" style={{ color: 'var(--green)' }}>CONNECTED</span>
         </div>
         <div className="status-line">
-          <span className="label">DATA STREAM</span>
-          <span className="val">ACTIVE</span>
+          <span className="label">MPU6050 (VIB)</span>
+          <span className="val" style={{ color: 'var(--green)' }}>CONNECTED</span>
+        </div>
+        <div className="status-line">
+          <span className="label">IR OPTICAL (RPM)</span>
+          <span className="val" style={{ color: 'var(--green)' }}>CONNECTED</span>
+        </div>
+        <div className="status-line">
+          <span className="label">DATA MODE</span>
+          <span className="val" style={{ color: dataSource === 'live' ? 'var(--green)' : 'var(--accent-2)' }}>
+            {dataSource === 'live' ? 'LIVE ESP32' : 'DEMO'}
+          </span>
         </div>
       </div>
     </aside>

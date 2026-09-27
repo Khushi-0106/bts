@@ -1,3 +1,7 @@
+// ============================================================================
+// App.jsx — MechSight Root Application Router
+// ============================================================================
+
 import React from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { DataProvider } from './context/DataContext.jsx'
@@ -6,13 +10,18 @@ import Header from './components/Header.jsx'
 import './styles.css'
 
 import Dashboard from './pages/Dashboard.jsx'
-import Assets from './pages/Assets.jsx'
+import ConditionHistory from './pages/ConditionHistory.jsx'
+import OperatingConditionsPage from './pages/OperatingConditionsPage.jsx'
+import ConditionGraphsPage from './pages/ConditionGraphsPage.jsx'
+import MachineTimelinePage from './pages/MachineTimelinePage.jsx'
+import SessionHistoryPage from './pages/SessionHistoryPage.jsx'
 import Monitoring from './pages/Monitoring.jsx'
 import Analytics from './pages/Analytics.jsx'
 import AnomalyDetection from './pages/AnomalyDetection.jsx'
 import Maintenance from './pages/Maintenance.jsx'
 import AssetPassportPage from './pages/AssetPassportPage.jsx'
 import Alerts from './pages/Alerts.jsx'
+import Assets from './pages/Assets.jsx'
 import Settings from './pages/Settings.jsx'
 
 export default function App() {
@@ -24,13 +33,18 @@ export default function App() {
           <Header />
           <Routes>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/assets" element={<Assets />} />
+            <Route path="/history" element={<ConditionHistory />} />
+            <Route path="/conditions" element={<OperatingConditionsPage />} />
+            <Route path="/graphs" element={<ConditionGraphsPage />} />
+            <Route path="/timeline" element={<MachineTimelinePage />} />
+            <Route path="/sessions" element={<SessionHistoryPage />} />
             <Route path="/monitoring" element={<Monitoring />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/anomaly-detection" element={<AnomalyDetection />} />
             <Route path="/maintenance" element={<Maintenance />} />
             <Route path="/passport" element={<AssetPassportPage />} />
             <Route path="/alerts" element={<Alerts />} />
+            <Route path="/assets" element={<Assets />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </div>

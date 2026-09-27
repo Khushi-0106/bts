@@ -1,17 +1,17 @@
-// Transparent, explainable "Asset Health Score" calculation.
-// This is a heuristic condition-monitoring score, NOT a validated
-// mechanical-failure diagnosis. Every number here is traceable back to a
-// named sensor parameter and a configurable weight/threshold.
+// ============================================================================
+// healthScore.js — Explainable Asset Health Intelligence Engine
+// ============================================================================
+// Calculates a traceable condition-monitoring score (0-100) from weighted
+// parameter baselines. Also derives machine operating state and contributing factors.
+// ============================================================================
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v))
 }
 
-// Piecewise-linear mapping of a raw sensor value to a 0-100 "param health".
-// lower_better (default): baseline -> 100, warnAt -> 70, critAt -> 30, beyond -> toward 0
-// higher_better (e.g. State of Health, Voltage): mirrored.
 function paramHealth(param, value) {
   const { baseline, warnAt, critAt, direction } = param
+  if (value === undefined || value === null || isNaN(value)) return 100
   if (warnAt === undefined || critAt === undefined) return 100
 
   if (direction === 'higher_better') {
@@ -25,7 +25,7 @@ function paramHealth(param, value) {
     return 70 + clamp(t, 0, 1) * 30
   }
 
-  // lower_better
+  // lower_better (temperature, vibration, current)
   if (value <= baseline) return 100
   if (value >= critAt) {
     const over = (value - critAt) / (critAt - baseline)
@@ -45,28 +45,69 @@ export function impactLabel(weight) {
   return 'LOW'
 }
 
-export function statusFromScore(score) {
-  if (score >= 80) return 'healthy'
-  if (score >= 55) return 'warning'
-  return 'critical'
+/**
+ * Maps health score and parameter status to standardized Machine Operating State:
+ * NORMAL | WARNING | ABNORMAL | MAINTENANCE REQUIRED | OFFLINE
+ */
+export function deriveOperatingState(score, hasCriticalParam, isOffline = false) {
+  if (isOffline) return 'OFFLINE'
+  if (score < 50 || hasCriticalParam) return 'MAINTENANCE REQUIRED'
+  if (score < 70) return 'ABNORMAL'
+  if (score < 85) return 'WARNING'
+  return 'NORMAL'
 }
 
-export function statusMeta(status) {
-  switch (status) {
-    case 'healthy': return { label: 'HEALTHY', color: 'green' }
-    case 'warning': return { label: 'WARNING', color: 'amber' }
-    default: return { label: 'CRITICAL', color: 'red' }
+export function statusMeta(stateOrStatus) {
+  const norm = (stateOrStatus || 'NORMAL').toUpperCase()
+  switch (norm) {
+    case 'NORMAL':
+    case 'HEALTHY':
+      return { label: 'NORMAL', color: 'green', desc: 'Operating within established baseline' }
+    case 'WARNING':
+      return { label: 'WARNING', color: 'amber', desc: 'Moderate parameter elevation observed' }
+    case 'ABNORMAL':
+      return { label: 'ABNORMAL', color: 'amber', desc: 'Significant parameter deviation detected' }
+    case 'MAINTENANCE REQUIRED':
+    case 'CRITICAL':
+      return { label: 'MAINTENANCE REQUIRED', color: 'red', desc: 'Immediate inspection recommended' }
+    case 'OFFLINE':
+      return { label: 'OFFLINE', color: 'neutral', desc: 'Machine telemetry disconnected' }
+    default:
+      return { label: 'NORMAL', color: 'green', desc: 'Condition nominal' }
   }
 }
 
-// reading: { [paramKey]: number }
 export function computeHealth(assetType, reading) {
+  if (!reading || !assetType) {
+    return {
+      score: 95,
+      factors: [],
+      status: 'NORMAL',
+      operatingState: 'NORMAL',
+      primaryFactor: null,
+      abnormalParameters: [],
+    }
+  }
+
   const scoredParams = assetType.params.filter(p => p.weight > 0)
   const totalWeight = scoredParams.reduce((s, p) => s + p.weight, 0) || 1
 
+  let hasCriticalParam = false
+  const abnormalParameters = []
+
   const factors = scoredParams.map(p => {
     const value = reading[p.key]
-    const health = value === undefined ? 100 : paramHealth(p, value)
+    const health = paramHealth(p, value)
+
+    if (p.critAt !== undefined) {
+      if (p.direction === 'higher_better' ? value <= p.critAt : value >= p.critAt) {
+        hasCriticalParam = true
+        abnormalParameters.push(p.label)
+      } else if (p.warnAt !== undefined && (p.direction === 'higher_better' ? value <= p.warnAt : value >= p.warnAt)) {
+        abnormalParameters.push(p.label)
+      }
+    }
+
     return {
       key: p.key,
       label: p.label,
@@ -74,33 +115,40 @@ export function computeHealth(assetType, reading) {
       value: Math.round(health),
       rawValue: value,
       weight: p.weight,
-      normalizedWeight: p.weight / totalWeight,
+      weightPct: Math.round((p.weight / totalWeight) * 100),
       impact: impactLabel(p.weight / totalWeight),
+      sourceType: p.sourceType || 'CALCULATED',
+      sensorHardware: p.sensorHardware || '',
     }
   })
 
   const score = Math.round(
-    factors.reduce((sum, f) => sum + f.value * f.normalizedWeight, 0)
+    factors.reduce((sum, f) => sum + f.value * (f.weight / totalWeight), 0)
   )
 
+  const clampedScore = clamp(score, 0, 100)
+  const operatingState = deriveOperatingState(clampedScore, hasCriticalParam)
+
   const primary = [...factors].sort((a, b) => {
-    const weightedGapA = (100 - a.value) * a.normalizedWeight
-    const weightedGapB = (100 - b.value) * b.normalizedWeight
+    const weightedGapA = (100 - a.value) * (a.weight / totalWeight)
+    const weightedGapB = (100 - b.value) * (b.weight / totalWeight)
     return weightedGapB - weightedGapA
   })[0]
 
   return {
-    score: clamp(score, 0, 100),
+    score: clampedScore,
     factors: factors.sort((a, b) => b.weight - a.weight),
-    status: statusFromScore(score),
+    status: operatingState,
+    operatingState,
     primaryFactor: primary,
+    abnormalParameters,
   }
 }
 
-export function primaryFactorNarrative(factor, assetLabel) {
+export function primaryFactorNarrative(factor, assetLabel = 'machine') {
   if (!factor || factor.value >= 90) {
     return `All monitored parameters for this ${assetLabel} are within their established baseline.`
   }
-  const severity = factor.value >= 60 ? 'slightly elevated' : 'significantly elevated compared with'
-  return `${factor.label} is ${severity} the asset baseline.`
+  const severity = factor.value >= 65 ? 'slightly elevated above' : 'significantly elevated compared with'
+  return `${factor.label} is ${severity} the machine baseline.`
 }

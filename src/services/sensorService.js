@@ -1,70 +1,143 @@
 // ============================================================================
-// sensorService.js
-//
-// This is the ONLY file the rest of the app talks to for live sensor data.
-// Right now it returns SIMULATED_DATA. To connect the real ESP32 prototype:
-//
-//   1. Stand up an API endpoint (e.g. a small Node/Express or FastAPI server)
-//      that the ESP32 posts readings to over Wi-Fi, in this shape:
-//
-//        {
-//          "assetId": "AST-IND-001",
-//          "assetType": "industrial_motor",
-//          "temperature": 48.6,
-//          "vibration": 2.31,
-//          "cycles": 1842,
-//          "current": 4.2,
-//          "timestamp": "2026-09-24T10:42:18"
-//        }
-//
-//   2. Replace the body of `fetchLiveReading()` below with a `fetch(...)`
-//      call to that endpoint.
-//   3. Leave `startReadingStream()`'s interface exactly as-is — every
-//      component subscribes through it, so no UI code needs to change.
-//   4. Keep `nextReading()` (simulated) as the automatic fallback: if the
-//      live fetch fails or the ESP32 is offline, the dashboard should keep
-//      working on demo data rather than showing a blank screen.
+// sensorService.js — MechSight Sensor Ingestion & Stream Service
+// ============================================================================
+// Ingestion pipeline for ESP32 Physical Sensors:
+// - DS18B20 Digital Temperature Sensor
+// - MPU6050 6-DOF I2C Accelerometer / Gyroscope (Vibration)
+// - Infrared Optical Sensor (RPM & Cycle Counting)
+// - Optional ACS712 Current Sensor
 // ============================================================================
 
 import { nextReading, initialReading } from '../data/simulatedData.js'
 
-const REFRESH_MS = 2500
+export const REFRESH_INTERVAL_MS = 2500
 
-// Swap this out for a real `fetch('/api/readings/latest')` call.
-async function fetchLiveReading(assetTypeKey, demoState, prevReading) {
-  // Simulated network latency, so the "LIVE" toggle feels real in a demo.
+// In-memory buffer for directly ingested readings from local network or tests
+let lastIngestedReading = null
+let lastIngestedTimestamp = 0
+
+/**
+ * Validates sensor values against physical hardware boundaries to prevent corrupt data
+ */
+export function validateSensorReading(raw) {
+  const flags = []
+  let isValid = true
+
+  // Temperature sanity check (DS18B20 range: -55°C to +125°C, motor operating range: 0°C to 110°C)
+  if (raw.temperature !== undefined) {
+    if (isNaN(raw.temperature) || raw.temperature < -20 || raw.temperature > 125) {
+      flags.push({ sensor: 'temperature', status: 'INVALID', reason: 'Out of realistic physical range' })
+      isValid = false
+    }
+  }
+
+  // Vibration sanity check (MPU6050: 0 to 16g)
+  if (raw.vibration !== undefined) {
+    if (isNaN(raw.vibration) || raw.vibration < 0 || raw.vibration > 25) {
+      flags.push({ sensor: 'vibration', status: 'INVALID', reason: 'Erratic accelerometer reading' })
+      isValid = false
+    }
+  }
+
+  // RPM sanity check (0 to 10,000 RPM)
+  if (raw.rpm !== undefined) {
+    if (isNaN(raw.rpm) || raw.rpm < 0 || raw.rpm > 12000) {
+      flags.push({ sensor: 'rpm', status: 'INVALID', reason: 'Optical pulse reading overflow' })
+      isValid = false
+    }
+  }
+
+  return { isValid, flags }
+}
+
+/**
+ * Ingests a reading payload directly (e.g. from an ESP32 HTTP POST / Webhook)
+ */
+export function ingestReading(payload) {
+  const validation = validateSensorReading(payload)
+  if (!validation.isValid) {
+    console.warn('Sensor data validation warnings:', validation.flags)
+  }
+
+  lastIngestedReading = {
+    ...payload,
+    timestamp: payload.timestamp || new Date().toISOString(),
+    source: 'live',
+  }
+  lastIngestedTimestamp = Date.now()
+  return lastIngestedReading
+}
+
+/**
+ * Fetches the latest reading from an ESP32 hardware endpoint.
+ * If endpoint fails, falls back safely to simulated data to preserve dashboard continuity.
+ */
+async function fetchLiveReading(endpointUrl, assetTypeKey, demoState, prevReading) {
+  // If recent data was ingested directly in the last 6 seconds, use it
+  if (lastIngestedReading && Date.now() - lastIngestedTimestamp < 6000) {
+    return lastIngestedReading
+  }
+
+  if (endpointUrl && endpointUrl.startsWith('http')) {
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 1800)
+
+      const response = await fetch(endpointUrl, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+
+      if (response.ok) {
+        const json = await response.json()
+        const validated = validateSensorReading(json)
+        if (validated.isValid) {
+          return {
+            ...json,
+            timestamp: json.timestamp || new Date().toISOString(),
+            source: 'live',
+          }
+        }
+      }
+    } catch (e) {
+      // Hardware temporarily unreachable — proceed to fallback below
+    }
+  }
+
+  // Fallback to simulated reading
   return nextReading(assetTypeKey, demoState, prevReading)
 }
 
 /**
- * Starts a polling stream of readings for the given asset.
- * @param {object} opts
- * @param {string} opts.assetTypeKey
- * @param {'normal'|'warning'|'critical'|null} opts.demoState
- * @param {'demo'|'live'} opts.source
- * @param {(reading: object) => void} opts.onReading
- * @returns {() => void} unsubscribe function
+ * Starts a continuous reading stream for the active asset.
  */
-export function startReadingStream({ assetTypeKey, demoState, source, onReading }) {
+export function startReadingStream({
+  assetTypeKey,
+  demoState,
+  source = 'demo',
+  endpointUrl = '',
+  onReading,
+}) {
   let prev = initialReading(assetTypeKey, demoState)
   onReading(prev)
 
   const interval = setInterval(async () => {
     try {
-      const reading =
-        source === 'live'
-          ? await fetchLiveReading(assetTypeKey, demoState, prev) // falls back to sim internally today
-          : nextReading(assetTypeKey, demoState, prev)
+      let reading
+      if (source === 'live') {
+        reading = await fetchLiveReading(endpointUrl, assetTypeKey, demoState, prev)
+      } else {
+        reading = nextReading(assetTypeKey, demoState, prev)
+      }
       prev = reading
       onReading(reading)
     } catch (err) {
-      // Live source unavailable — keep the dashboard alive on simulated data.
       prev = nextReading(assetTypeKey, demoState, prev)
       onReading(prev)
     }
-  }, REFRESH_MS)
+  }, REFRESH_INTERVAL_MS)
 
   return () => clearInterval(interval)
 }
-
-export const REFRESH_INTERVAL_MS = REFRESH_MS

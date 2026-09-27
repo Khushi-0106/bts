@@ -1,37 +1,65 @@
+// ============================================================================
+// DemoMode.jsx — Prototype Simulation & Demonstration Controller
+// ============================================================================
+
 import React from 'react'
 import { useAssetData } from '../context/DataContext.jsx'
 
-const OPTIONS = [
-  { key: 'normal', label: 'NORMAL', cls: 'ok' },
-  { key: 'warning', label: 'WARNING', cls: 'warn' },
-  { key: 'critical', label: 'CRITICAL', cls: 'crit' },
-]
-
 export default function DemoMode() {
-  const { demoState, setDemoState } = useAssetData()
+  const { demoState, setDemoState, dataSource, setDataSource } = useAssetData()
+
+  const handleSelect = (state) => {
+    setDemoState(state)
+  }
 
   return (
-    <div className="panel demo-mode-card fade-in">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span className="section-title" style={{ marginBottom: 0 }}>Demo Mode</span>
-        <span className="demo-tag">SOFTWARE-SIMULATED VALUES</span>
+    <div className="panel panel-pad fade-in">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <div className="section-title" style={{ marginBottom: 0 }}>Prototype Demonstration Mode</div>
+        <span className="demo-tag">SIMULATED SCENARIO INJECTOR</span>
       </div>
-      <p className="section-sub" style={{ marginTop: 6 }}>
-        Drives every panel on this dashboard — sensors, health score, anomaly score, alerts and maintenance
-        recommendations — from a single simulated state. Nothing here can physically overheat or damage the
-        connected hardware.
+      <p className="section-sub">
+        Inject simulated sensor conditions to demonstrate MechSight's AIoT intelligence pipeline.
+        Critical mode only affects software calculations; no hazardous commands are sent to physical hardware.
       </p>
 
       <div className="demo-btn-row">
-        {OPTIONS.map(o => (
+        <button
+          className={'btn demo-btn' + (demoState === null || demoState === 'normal' ? ' btn-active ok' : '')}
+          onClick={() => handleSelect('normal')}
+        >
+          <div style={{ fontWeight: 800 }}>NORMAL</div>
+          <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>Baseline conditions</div>
+        </button>
+
+        <button
+          className={'btn demo-btn' + (demoState === 'warning' ? ' btn-active warn' : '')}
+          onClick={() => handleSelect('warning')}
+        >
+          <div style={{ fontWeight: 800 }}>WARNING</div>
+          <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>Elevated vibration</div>
+        </button>
+
+        <button
+          className={'btn demo-btn' + (demoState === 'abnormal' ? ' btn-active crit' : '')}
+          onClick={() => handleSelect('abnormal')}
+        >
+          <div style={{ fontWeight: 800 }}>ABNORMAL</div>
+          <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>Multi-sensor threshold breach</div>
+        </button>
+      </div>
+
+      <div style={{ marginTop: 14, fontSize: 11.5, color: 'var(--text-faint)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span>Active Scenario: <b>{demoState ? demoState.toUpperCase() : 'LIVE REAL-TIME STREAM'}</b></span>
+        {demoState && (
           <button
-            key={o.key}
-            className={'btn demo-btn' + (demoState === o.key ? ' btn-active ' + o.cls : '')}
-            onClick={() => setDemoState(o.key)}
+            className="btn"
+            style={{ padding: '3px 8px', fontSize: 11 }}
+            onClick={() => setDemoState(null)}
           >
-            {o.label}
+            Reset to Baseline
           </button>
-        ))}
+        )}
       </div>
     </div>
   )

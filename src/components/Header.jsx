@@ -1,14 +1,18 @@
+// ============================================================================
+// Header.jsx — MechSight Top Command Bar
+// ============================================================================
+
 import React from 'react'
 import { useAssetData } from '../context/DataContext.jsx'
 
 export default function Header() {
-  const { assetId, setAssetId, assets, dataSource, setDataSource } = useAssetData()
+  const { assetId, setAssetId, assets, dataSource, setDataSource, statusMeta, asset } = useAssetData()
 
   return (
     <header className="topbar">
       <div className="topbar-left">
-        <div className="topbar-title">Asset Health Intelligence</div>
-        <div className="topbar-sub">Continuous condition monitoring &amp; predictive maintenance</div>
+        <div className="topbar-title">MechSight — Machine Condition Intelligence</div>
+        <div className="topbar-sub">Real-Time AIoT Physical Prototype Monitoring &amp; Condition Recording</div>
       </div>
 
       <div className="topbar-right">
@@ -20,22 +24,20 @@ export default function Header() {
           </select>
         </div>
 
-        <div className="pill pill-green">
-          <span className="pill-dot" /> LIVE
+        <div className={`pill pill-${statusMeta.color}`}>
+          <span className="pill-dot" /> {statusMeta.label}
         </div>
 
         <div
           className="toggle"
           onClick={() => setDataSource(dataSource === 'live' ? 'demo' : 'live')}
-          title="Toggle between simulated demo data and live ESP32 data"
+          title="Toggle between Live ESP32 Hardware Data and Demo Mode"
         >
-          {dataSource === 'live' ? 'LIVE SENSOR DATA' : 'DEMO DATA'}
+          {dataSource === 'live' ? 'LIVE HARDWARE DATA' : 'DEMO MODE'}
           <span className={'toggle-track' + (dataSource === 'live' ? ' on' : '')}>
             <span className="toggle-thumb" />
           </span>
         </div>
-
-        <div className="icon-btn" title="Notifications">🔔</div>
       </div>
     </header>
   )
