@@ -331,6 +331,31 @@ export function DataProvider({ children }) {
     setSessions(storageService.getSessions(assetId))
   }
 
+  const alerts = useMemo(() => {
+    const list = []
+    if (health?.operatingState === 'MAINTENANCE REQUIRED' || demoState === 'abnormal') {
+      list.push({ id: 'alt_crit', level: 'CRITICAL', text: `${health?.abnormalParameters?.join(', ') || 'Operating parameters'} exceeded critical threshold`, minsAgo: 1 })
+    }
+    if (health?.operatingState === 'WARNING' || health?.operatingState === 'ABNORMAL' || demoState === 'warning') {
+      list.push({ id: 'alt_warn', level: 'MEDIUM', text: `${health?.primaryFactor?.label || 'Vibration'} elevated relative to baseline`, minsAgo: 3 })
+    }
+    if (events && events.length > 0) {
+      events.slice(0, 4).forEach((ev, idx) => {
+        if (ev.severity === 'WARNING' || ev.severity === 'CRITICAL') {
+          list.push({
+            id: `alt_ev_${ev.id || idx}`,
+            level: ev.severity === 'CRITICAL' ? 'CRITICAL' : 'MEDIUM',
+            text: ev.observedCondition || ev.parameter,
+            minsAgo: Math.max(1, Math.round((Date.now() - new Date(ev.timestamp).getTime()) / 60000)),
+          })
+        }
+      })
+    }
+    list.push({ id: 'alt_res', level: 'RESOLVED', text: 'Telemetry synchronization verified', minsAgo: 12 })
+    list.push({ id: 'alt_info', level: 'LOW', text: 'Baseline condition equilibrium active', minsAgo: 25 })
+    return list
+  }, [health, demoState, events])
+
   const value = {
     assetId, setAssetId,
     asset,
@@ -346,6 +371,7 @@ export function DataProvider({ children }) {
     endActiveSession,
     events,
     anomalies,
+    alerts,
     conditionSummary,
     health,
     anomaly,
