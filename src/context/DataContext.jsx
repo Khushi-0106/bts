@@ -1,377 +1,327 @@
 // ============================================================================
-// DataContext.jsx — Central Condition Intelligence State & Storage Hub
+// DataContext.jsx — Real Hardware Telemetry & Condition State Engine
 // ============================================================================
 
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { ASSET_TYPES, ASSETS } from '../data/assetData.js'
-import { startReadingStream } from '../services/sensorService.js'
+import {
+  startReadingStream,
+  fetchHardwareHistory,
+  fetchHardwareSessions,
+  fetchHardwareAnomalies,
+  fetchDeviceDiagnostics,
+} from '../services/sensorService.js'
 import { generateHistory } from '../data/simulatedData.js'
 import { computeHealth, primaryFactorNarrative, statusMeta } from '../utils/healthScore.js'
 import { computeAnomaly, anomalyNarrative } from '../utils/anomalyDetection.js'
-import { storageService, seedInitialHistory, formatRuntime } from '../services/storageService.js'
+import { storageService, formatRuntime } from '../services/storageService.js'
 
 const DataContext = createContext(null)
 
 export function DataProvider({ children }) {
-  const [assetId, setAssetId] = useState('AST-IND-001')
-  const [demoState, setDemoState] = useState(null) // null = normal / real stream | 'normal' | 'warning' | 'abnormal'
-  const [dataSource, setDataSource] = useState('live') // 'live' | 'demo'
-  const [esp32Endpoint, setEsp32Endpoint] = useState('http://192.168.4.1/api/sensors')
-  
-  const [reading, setReading] = useState(null)
-  const [records, setRecords] = useState([])
-  const [sessions, setSessions] = useState([])
-  const [events, setEvents] = useState([])
-  const [anomalies, setAnomalies] = useState([])
+  const [assetId, setAssetId] = useState('MOTOR-001')
+  const [dataSource, setDataSource] = useState('live') // 'live' (Real Hardware) | 'demo' (Simulation Mode)
+  const [demoState, setDemoState] = useState('normal') // 'normal' | 'warning' | 'abnormal'
+  const [esp32Endpoint, setEsp32Endpoint] = useState('http://192.168.1.8:5000/api/sensors')
 
-  const prevOperatingStateRef = useRef('NORMAL')
-  const readingRef = useRef(null)
+  // Real Hardware Telemetry State
+  const [realReading, setRealReading] = useState(null)
+  const [realHistory, setRealHistory] = useState([])
+  const [realSessions, setRealSessions] = useState([])
+  const [realAnomalies, setRealAnomalies] = useState([])
+  const [hardwareStatus, setHardwareStatus] = useState({
+    isOnline: false,
+    secondsAgo: null,
+    statusText: '🔴 HARDWARE OFFLINE',
+  })
+  const [diagnostics, setDiagnostics] = useState(null)
 
-  const asset = ASSETS.find(a => a.id === assetId) || ASSETS[0]
-  const assetTypeKey = asset.type
-  const assetType = ASSET_TYPES[assetTypeKey]
+  // Demo Mode State (Completely separate sandbox)
+  const [demoReading, setDemoReading] = useState(null)
+  const [demoHistory, setDemoHistory] = useState([])
 
-  // Initialize and load historical records for this asset
+  const asset = ASSETS.find(a => a.id === assetId) || {
+    id: assetId,
+    type: 'industrial_motor',
+    name: 'Industrial DC Motor Testbed',
+    installed: '2026',
+    location: 'AIoT Hardware Testbed — Rig 1',
+    mcu: 'ESP32 DevKit V1 (Wi-Fi/HTTP)',
+    sensors: 'DS18B20 (GPIO4) + Optical IR (GPIO18)',
+  }
+  const assetTypeKey = asset.type || 'industrial_motor'
+  const assetType = ASSET_TYPES[assetTypeKey] || ASSET_TYPES.industrial_motor
+
+  // 1. Fetch Real Hardware Records from Backend API
+  const refreshRealData = async () => {
+    if (dataSource === 'live') {
+      const [hist, sess, anom, diag] = await Promise.all([
+        fetchHardwareHistory(assetId),
+        fetchHardwareSessions(assetId),
+        fetchHardwareAnomalies(assetId),
+        fetchDeviceDiagnostics(),
+      ])
+      setRealHistory(hist)
+      setRealSessions(sess)
+      setRealAnomalies(anom)
+      setDiagnostics(diag)
+    }
+  }
+
   useEffect(() => {
-    // Seed initial history if storage is completely empty for this asset
-    const seeded = seedInitialHistory(assetId, assetType, {
-      cycles: assetType.params.find(p => p.isCounter),
-      temperature: assetType.params.find(p => p.key === 'temperature'),
-      vibration: assetType.params.find(p => p.key === 'vibration'),
-      rpm: assetType.params.find(p => p.key === 'rpm'),
-    })
+    refreshRealData()
+    const interval = setInterval(refreshRealData, 4000)
+    return () => clearInterval(interval)
+  }, [assetId, dataSource])
 
-    setRecords(storageService.getRecords(assetId) || seeded)
-    setSessions(storageService.getSessions(assetId))
-    setEvents(storageService.getEvents(assetId))
-    setAnomalies(storageService.getAnomalies(assetId))
-  }, [assetId, assetTypeKey])
-
-  // Compute live health and anomaly states
-  const health = useMemo(() => {
-    if (!reading) return null
-    return computeHealth(assetType, reading)
-  }, [assetType, reading])
-
-  const anomaly = useMemo(() => {
-    if (!reading) return null
-    return computeAnomaly(assetType, reading)
-  }, [assetType, reading])
-
-  // Maintenance recommendations derived from health
-  const maintenance = useMemo(() => {
-    if (!health) return null
-    const state = health.operatingState
-
-    if (state === 'MAINTENANCE REQUIRED' || demoState === 'abnormal') {
-      return {
-        title: 'IMMEDIATE INSPECTION REQUIRED',
-        priority: 'HIGH',
-        reason: `${health.abnormalParameters.join(', ') || 'Operating parameters'} have exceeded safety thresholds.`,
-        action: 'Safely halt motor cycle. Inspect bearing lubrication, mounting stiffness, and electrical connections.',
-      }
-    }
-    if (state === 'WARNING' || state === 'ABNORMAL' || demoState === 'warning') {
-      return {
-        title: 'ROUTINE INSPECTION RECOMMENDED',
-        priority: 'MEDIUM',
-        reason: `${health.primaryFactor?.label || 'Vibration'} is trending outside the normal operating baseline.`,
-        action: `Inspect ${assetTypeKey === 'ev_battery' ? 'battery thermal management and cell connections' : 'motor mounting, coupling alignment, and shaft balance'}.`,
-      }
-    }
-    return {
-      title: 'OPTIMAL OPERATION',
-      priority: 'LOW',
-      reason: 'All monitored sensor parameters are within the established baseline.',
-      action: 'Continue continuous AIoT condition recording. Next automated baseline check is continuous.',
-    }
-  }, [health, demoState, assetTypeKey])
-
-  // Stream sensor data and record timestamped condition points
+  // 2. Stream Ingestion Subscription
   useEffect(() => {
     const unsubscribe = startReadingStream({
       assetTypeKey,
       demoState,
       source: dataSource,
-      endpointUrl: esp32Endpoint,
-      onReading: (r) => {
-        readingRef.current = r
-        setReading(r)
-
-        const h = computeHealth(assetType, r)
-        const a = computeAnomaly(assetType, r)
-        const state = h.operatingState
-
-        const record = {
-          id: `rec_${Date.now()}`,
-          timestamp: r.timestamp || new Date().toISOString(),
-          assetId,
-          assetType: assetType.label,
-          operatingState: state,
-          temperature: r.temperature,
-          vibration: r.vibration,
-          rpm: r.rpm !== undefined ? r.rpm : 285,
-          cycleCount: r.cycleCount !== undefined ? r.cycleCount : r.cycles,
-          current: r.current,
-          voltage: r.voltage,
-          runtime: r.runtime,
-          runtimeFormatted: r.runtimeFormatted || formatRuntime(r.runtime),
-          sensorStatus: r.sensorStatus || {
-            temperature: 'CONNECTED',
-            vibration: 'CONNECTED',
-            rpm: 'CONNECTED',
-            cycles: 'CONNECTED',
-            current: 'SIMULATED',
-            voltage: 'SIMULATED',
-          },
-          sensorSources: r.sensorSources || {},
-          healthScore: h.score,
-          anomalyScore: a.score,
-          anomalyStatus: a.status,
-          abnormalParameters: h.abnormalParameters,
-          maintenanceRecommendation: maintenance,
-          source: dataSource,
-        }
-
-        // Persist record to storage
-        const updatedRecords = storageService.addRecord(assetId, record)
-        setRecords(updatedRecords)
-
-        // Handle State Transition Events
-        if (prevOperatingStateRef.current !== state) {
-          const transEvent = {
-            id: `ev_state_${Date.now()}`,
-            timestamp: new Date().toISOString(),
-            parameter: 'Operating State',
-            observedCondition: `Transitioned from ${prevOperatingStateRef.current} → ${state}`,
-            severity: state === 'NORMAL' ? 'INFO' : state === 'WARNING' ? 'WARNING' : 'CRITICAL',
-            systemResponse: `Updated machine status and triggered condition recalculation.`,
-          }
-          prevOperatingStateRef.current = state
-          const updatedEvents = storageService.addEvent(assetId, transEvent)
-          setEvents(updatedEvents)
-        }
-
-        // Handle Anomaly Events
-        if (a.anomalies && a.anomalies.length > 0) {
-          a.anomalies.forEach(anom => {
-            const fullAnomaly = {
-              ...anom,
-              timestamp: record.timestamp,
-              assetId,
-            }
-            const updatedAnoms = storageService.addAnomaly(assetId, fullAnomaly)
-            setAnomalies(updatedAnoms)
+      onReading: (reading) => {
+        if (dataSource === 'live') {
+          setRealReading(reading)
+          setRealHistory(prev => {
+            const exists = prev.some(r => r.id === reading.id || (r.timestamp === reading.timestamp && r.deviceId === reading.deviceId))
+            if (exists) return prev
+            return [...prev, reading]
           })
+        } else {
+          setDemoReading(reading)
+        }
+      },
+      onDeviceStatus: (status) => {
+        if (dataSource === 'live') {
+          setHardwareStatus(status)
         }
       },
     })
-
     return unsubscribe
-  }, [assetId, assetTypeKey, demoState, dataSource, esp32Endpoint])
+  }, [assetId, assetTypeKey, dataSource, demoState])
 
-  // Calculate dynamic condition summary statistics from recorded history
+  // Active Reading depends strictly on current mode
+  const activeReading = useMemo(() => {
+    if (dataSource === 'live') {
+      return realReading
+    }
+    return demoReading
+  }, [dataSource, realReading, demoReading])
+
+  // Active History
+  const activeRecords = useMemo(() => {
+    if (dataSource === 'live') {
+      return realHistory
+    }
+    return storageService.getRecords(assetId) || []
+  }, [dataSource, realHistory, assetId])
+
+  // Compute Health & Anomaly based on real sensors
+  const health = useMemo(() => {
+    if (dataSource === 'live') {
+      if (!realReading) {
+        return {
+          score: 100,
+          factors: [],
+          status: 'OFFLINE',
+          operatingState: 'OFFLINE',
+          primaryFactor: null,
+          abnormalParameters: [],
+        }
+      }
+      return computeHealth(assetType, realReading)
+    }
+    if (!demoReading) return null
+    return computeHealth(assetType, demoReading)
+  }, [dataSource, realReading, demoReading, assetType])
+
+  const anomaly = useMemo(() => {
+    if (dataSource === 'live') {
+      if (!realReading) return { score: 0, status: 'NORMAL', checks: [], anomalies: [] }
+      return computeAnomaly(assetType, realReading)
+    }
+    if (!demoReading) return null
+    return computeAnomaly(assetType, demoReading)
+  }, [dataSource, realReading, demoReading, assetType])
+
+  // Dynamic Condition Summary Stats
   const conditionSummary = useMemo(() => {
-    if (!records || records.length === 0) {
+    const recs = activeRecords
+    if (!recs || recs.length === 0) {
       return {
-        minTemp: 28.5, maxTemp: 36.8, avgTemp: 34.2,
-        minVib: 0.12, maxVib: 0.44, avgVib: 0.28,
-        minRpm: 275, maxRpm: 295, avgRpm: 285,
-        totalCycles: 12480, totalRuntime: 3600,
-        anomaliesCount: 0, warningsCount: 0, maintenanceCount: 0,
+        minTemp: realReading?.temperature ?? '—',
+        maxTemp: realReading?.temperature ?? '—',
+        avgTemp: realReading?.temperature ?? '—',
+        minRpm: realReading?.rpm ?? '—',
+        maxRpm: realReading?.rpm ?? '—',
+        avgRpm: realReading?.rpm ?? '—',
+        minVib: realReading?.vibration ?? '—',
+        maxVib: realReading?.vibration ?? '—',
+        avgVib: realReading?.vibration ?? '—',
+        totalCycles: realReading?.cycleCount || 0,
+        totalRuntime: 0,
+        totalRuntimeFormatted: '00:00:00',
+        anomaliesCount: realAnomalies.length,
+        warningsCount: 0,
+        maintenanceCount: 0,
       }
     }
 
-    const temps = records.map(r => r.temperature).filter(v => v !== undefined && !isNaN(v))
-    const vibs = records.map(r => r.vibration).filter(v => v !== undefined && !isNaN(v))
-    const rpms = records.map(r => r.rpm).filter(v => v !== undefined && !isNaN(v))
-    const cycles = records.map(r => r.cycleCount || r.cycles).filter(v => v !== undefined && !isNaN(v))
+    const validTemps = recs.map(r => r.temperature).filter(v => v !== null && v !== undefined && !isNaN(v))
+    const validRpms = recs.map(r => r.rpm).filter(v => v !== null && v !== undefined && !isNaN(v))
+    const validVibs = recs.map(r => r.vibration).filter(v => v !== null && v !== undefined && !isNaN(v))
+    const validCycles = recs.map(r => r.cycleCount).filter(v => v !== null && v !== undefined && !isNaN(v))
 
-    const avg = arr => arr.length ? (arr.reduce((s, x) => s + x, 0) / arr.length) : 0
+    const avg = arr => arr.length ? +(arr.reduce((s, x) => s + x, 0) / arr.length).toFixed(1) : '—'
 
     return {
-      minTemp: temps.length ? Math.min(...temps) : 34.0,
-      maxTemp: temps.length ? Math.max(...temps) : 34.0,
-      avgTemp: temps.length ? +avg(temps).toFixed(1) : 34.0,
+      minTemp: validTemps.length ? Math.min(...validTemps) : '—',
+      maxTemp: validTemps.length ? Math.max(...validTemps) : '—',
+      avgTemp: avg(validTemps),
 
-      minVib: vibs.length ? Math.min(...vibs) : 0.25,
-      maxVib: vibs.length ? Math.max(...vibs) : 0.25,
-      avgVib: vibs.length ? +avg(vibs).toFixed(2) : 0.25,
+      minRpm: validRpms.length ? Math.min(...validRpms) : '—',
+      maxRpm: validRpms.length ? Math.max(...validRpms) : '—',
+      avgRpm: validRpms.length ? Math.round(validRpms.reduce((s, x) => s + x, 0) / validRpms.length) : '—',
 
-      minRpm: rpms.length ? Math.min(...rpms) : 285,
-      maxRpm: rpms.length ? Math.max(...rpms) : 285,
-      avgRpm: rpms.length ? Math.round(avg(rpms)) : 285,
+      minVib: validVibs.length ? Math.min(...validVibs) : '—',
+      maxVib: validVibs.length ? Math.max(...validVibs) : '—',
+      avgVib: validVibs.length ? +(validVibs.reduce((s, x) => s + x, 0) / validVibs.length).toFixed(2) : '—',
 
-      totalCycles: cycles.length ? Math.max(...cycles) : 12480,
-      totalRuntime: records[records.length - 1]?.runtime || 3600,
-      totalRuntimeFormatted: records[records.length - 1]?.runtimeFormatted || '01:00:00',
+      totalCycles: validCycles.length ? Math.max(...validCycles) : (realReading?.cycleCount || 0),
+      totalRuntime: recs.length,
+      totalRuntimeFormatted: formatRuntime(recs.length),
 
-      anomaliesCount: anomalies.length,
-      warningsCount: records.filter(r => r.operatingState === 'WARNING' || r.operatingState === 'ABNORMAL').length,
-      maintenanceCount: records.filter(r => r.operatingState === 'MAINTENANCE REQUIRED').length,
+      anomaliesCount: dataSource === 'live' ? realAnomalies.length : 0,
+      warningsCount: recs.filter(r => r.operatingState === 'WARNING').length,
+      maintenanceCount: recs.filter(r => r.operatingState === 'MAINTENANCE REQUIRED').length,
     }
-  }, [records, anomalies])
+  }, [activeRecords, realReading, realAnomalies, dataSource])
 
-  // Get historical series for charting
+  // Get Historical Series for Charts
   const getHistory = (paramKey, range = '24H') => {
-    // If we have live recorded points for this range, extract them
-    if (range === 'Live' && records && records.length > 5) {
-      return records.slice(-30).map(r => ({
-        time: r.timestamp,
-        label: new Date(r.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        value: r[paramKey] !== undefined ? r[paramKey] : r.cycleCount,
-      }))
-    }
-    // Fall back to seamless historical generator
-    return generateHistory(assetTypeKey, paramKey, range, reading?.[paramKey], demoState)
-  }
+    if (dataSource === 'live') {
+      if (!realHistory || realHistory.length === 0) return []
 
-  // Session Control
-  const activeSession = useMemo(() => {
-    return sessions.find(s => s.status === 'ACTIVE') || sessions[0] || null
-  }, [sessions])
+      let filtered = realHistory
+      const now = Date.now()
+      if (range === 'Live') filtered = realHistory.slice(-40)
+      else if (range === '1H') filtered = realHistory.filter(r => new Date(r.timestamp).getTime() >= now - 3600 * 1000)
+      else if (range === '6H') filtered = realHistory.filter(r => new Date(r.timestamp).getTime() >= now - 6 * 3600 * 1000)
+      else if (range === '24H') filtered = realHistory.filter(r => new Date(r.timestamp).getTime() >= now - 24 * 3600 * 1000)
+      else if (range === '7D') filtered = realHistory.filter(r => new Date(r.timestamp).getTime() >= now - 7 * 24 * 3600 * 1000)
 
-  const startNewSession = () => {
-    const newSession = {
-      id: `SES-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-3)}`,
-      assetId,
-      startTime: new Date().toISOString(),
-      endTime: null,
-      status: 'ACTIVE',
-      totalRuntime: 0,
-      totalRuntimeFormatted: '00:00:00',
-      totalCycles: 0,
-      avgConditions: {
-        temperature: reading?.temperature || 34.6,
-        vibration: reading?.vibration || 0.28,
-        rpm: reading?.rpm || 285,
-        current: reading?.current || 3.8,
-        voltage: reading?.voltage || 12.0,
-      },
-      maxConditions: {
-        temperature: reading?.temperature || 34.6,
-        vibration: reading?.vibration || 0.28,
-        rpm: reading?.rpm || 285,
-        current: reading?.current || 3.8,
-        voltage: reading?.voltage || 12.0,
-      },
-      minConditions: {
-        temperature: reading?.temperature || 34.6,
-        vibration: reading?.vibration || 0.28,
-        rpm: reading?.rpm || 285,
-        current: reading?.current || 3.8,
-        voltage: reading?.voltage || 12.0,
-      },
-      anomaliesCount: 0,
-      finalHealthScore: health?.score || 95,
-      maintenanceRecommendation: 'New machine operating session active.',
-    }
-
-    const updated = [newSession, ...sessions.map(s => s.status === 'ACTIVE' ? { ...s, status: 'COMPLETED', endTime: new Date().toISOString() } : s)]
-    storageService.saveSessions(assetId, updated)
-    setSessions(updated)
-
-    // Add session start event
-    const startEvent = {
-      id: `ev_ses_${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      parameter: 'Session Manager',
-      observedCondition: `Started new recording session ${newSession.id}`,
-      severity: 'INFO',
-      systemResponse: 'Session timer and condition aggregator initialized.',
-    }
-    const updatedEvents = storageService.addEvent(assetId, startEvent)
-    setEvents(updatedEvents)
-  }
-
-  const endActiveSession = () => {
-    if (!activeSession || activeSession.status !== 'ACTIVE') return
-    const updated = sessions.map(s => {
-      if (s.id === activeSession.id) {
+      return filtered.map(r => {
+        const val = r[paramKey] !== undefined ? r[paramKey] : null
         return {
-          ...s,
-          status: 'COMPLETED',
-          endTime: new Date().toISOString(),
-          finalHealthScore: health?.score || 90,
-          maintenanceRecommendation: maintenance?.title || 'Session completed.',
-        }
-      }
-      return s
-    })
-    storageService.saveSessions(assetId, updated)
-    setSessions(updated)
-
-    const endEvent = {
-      id: `ev_ses_end_${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      parameter: 'Session Manager',
-      observedCondition: `Closed session ${activeSession.id}`,
-      severity: 'INFO',
-      systemResponse: 'Session summary and condition aggregates archived.',
-    }
-    const updatedEvents = storageService.addEvent(assetId, endEvent)
-    setEvents(updatedEvents)
-  }
-
-  const exportCSV = () => {
-    storageService.downloadCSV(assetId, records)
-  }
-
-  const clearAllHistory = () => {
-    storageService.clearHistory(assetId)
-    const seeded = seedInitialHistory(assetId, assetType, {
-      cycles: assetType.params.find(p => p.isCounter),
-      temperature: assetType.params.find(p => p.key === 'temperature'),
-      vibration: assetType.params.find(p => p.key === 'vibration'),
-      rpm: assetType.params.find(p => p.key === 'rpm'),
-    })
-    setRecords(seeded)
-    setEvents(storageService.getEvents(assetId))
-    setAnomalies(storageService.getAnomalies(assetId))
-    setSessions(storageService.getSessions(assetId))
-  }
-
-  const alerts = useMemo(() => {
-    const list = []
-    if (health?.operatingState === 'MAINTENANCE REQUIRED' || demoState === 'abnormal') {
-      list.push({ id: 'alt_crit', level: 'CRITICAL', text: `${health?.abnormalParameters?.join(', ') || 'Operating parameters'} exceeded critical threshold`, minsAgo: 1 })
-    }
-    if (health?.operatingState === 'WARNING' || health?.operatingState === 'ABNORMAL' || demoState === 'warning') {
-      list.push({ id: 'alt_warn', level: 'MEDIUM', text: `${health?.primaryFactor?.label || 'Vibration'} elevated relative to baseline`, minsAgo: 3 })
-    }
-    if (events && events.length > 0) {
-      events.slice(0, 4).forEach((ev, idx) => {
-        if (ev.severity === 'WARNING' || ev.severity === 'CRITICAL') {
-          list.push({
-            id: `alt_ev_${ev.id || idx}`,
-            level: ev.severity === 'CRITICAL' ? 'CRITICAL' : 'MEDIUM',
-            text: ev.observedCondition || ev.parameter,
-            minsAgo: Math.max(1, Math.round((Date.now() - new Date(ev.timestamp).getTime()) / 60000)),
-          })
+          time: r.timestamp,
+          label: new Date(r.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          value: val !== null ? val : 0,
         }
       })
     }
-    list.push({ id: 'alt_res', level: 'RESOLVED', text: 'Telemetry synchronization verified', minsAgo: 12 })
-    list.push({ id: 'alt_info', level: 'LOW', text: 'Baseline condition equilibrium active', minsAgo: 25 })
+
+    // Demo Mode historical series
+    return generateHistory(assetTypeKey, paramKey, range, demoReading?.[paramKey], demoState)
+  }
+
+  // Maintenance recommendations
+  const maintenance = useMemo(() => {
+    if (!health) return null
+    if (health.operatingState === 'OFFLINE') {
+      return {
+        title: 'HARDWARE OFFLINE',
+        priority: 'LOW',
+        reason: 'ESP32 telemetry is currently disconnected or offline.',
+        action: 'Power on ESP32 DevKit and verify Wi-Fi connection to MechSight server.',
+      }
+    }
+    if (health.operatingState === 'MAINTENANCE REQUIRED') {
+      return {
+        title: 'IMMEDIATE INSPECTION REQUIRED',
+        priority: 'HIGH',
+        reason: `${health.abnormalParameters.join(', ') || 'Physical parameter'} exceeded critical safety limit.`,
+        action: 'Safely halt motor. Inspect DS18B20 thermal contact, bearing friction, and optical IR disk.',
+      }
+    }
+    if (health.operatingState === 'WARNING') {
+      return {
+        title: 'ROUTINE INSPECTION RECOMMENDED',
+        priority: 'MEDIUM',
+        reason: `${health.primaryFactor?.label || 'Temperature'} has risen above standard operating baseline.`,
+        action: 'Verify ventilation, check motor current load, and verify shaft free rotation.',
+      }
+    }
+    return {
+      title: 'OPTIMAL OPERATION',
+      priority: 'LOW',
+      reason: 'Physical DS18B20 and IR sensor telemetry are operating within normal baseline.',
+      action: 'Continuous AIoT condition recording active. No maintenance action required.',
+    }
+  }, [health])
+
+  // Real Alerts
+  const alerts = useMemo(() => {
+    const list = []
+    if (dataSource === 'live') {
+      if (!hardwareStatus.isOnline) {
+        list.push({ id: 'alt_off', level: 'MEDIUM', text: 'ESP32 Hardware Disconnected / Offline', minsAgo: hardwareStatus.secondsAgo ? Math.round(hardwareStatus.secondsAgo / 60) : 0 })
+      } else {
+        list.push({ id: 'alt_on', level: 'RESOLVED', text: 'ESP32 Hardware Streaming Live Telemetry', minsAgo: 0 })
+      }
+      realAnomalies.slice(0, 4).forEach(anom => {
+        list.push({
+          id: anom.id,
+          level: anom.severity === 'CRITICAL' ? 'CRITICAL' : 'MEDIUM',
+          text: `${anom.parameter}: ${anom.observedValue} (${anom.deviation})`,
+          minsAgo: Math.max(1, Math.round((Date.now() - new Date(anom.timestamp).getTime()) / 60000)),
+        })
+      })
+    } else {
+      list.push({ id: 'alt_demo', level: 'LOW', text: 'Demonstration simulation scenario active', minsAgo: 1 })
+    }
     return list
-  }, [health, demoState, events])
+  }, [dataSource, hardwareStatus, realAnomalies])
+
+  // Actions: CSV Export
+  const exportCSV = () => {
+    if (dataSource === 'live') {
+      window.open(`/api/sensors/export?assetId=${encodeURIComponent(assetId)}`, '_blank')
+    } else {
+      storageService.downloadCSV(assetId, activeRecords)
+    }
+  }
+
+  // Actions: Clear Database
+  const clearAllHistory = async () => {
+    if (dataSource === 'live') {
+      await fetch('/api/sensors/clear', { method: 'POST' })
+      setRealHistory([])
+      setRealSessions([])
+      setRealAnomalies([])
+      setRealReading(null)
+    } else {
+      storageService.clearHistory(assetId)
+    }
+  }
 
   const value = {
     assetId, setAssetId,
     asset,
     assetTypeKey, assetType,
-    demoState, setDemoState,
     dataSource, setDataSource,
+    demoState, setDemoState,
     esp32Endpoint, setEsp32Endpoint,
-    reading,
-    records,
-    sessions,
-    activeSession,
-    startNewSession,
-    endActiveSession,
-    events,
-    anomalies,
+    reading: activeReading,
+    realReading,
+    records: activeRecords,
+    sessions: dataSource === 'live' ? realSessions : storageService.getSessions(assetId),
+    activeSession: dataSource === 'live' ? (realSessions.find(s => s.status === 'ACTIVE') || realSessions[0] || null) : null,
+    anomalies: dataSource === 'live' ? realAnomalies : [],
+    events: dataSource === 'live' ? realHistory.slice(-20).reverse() : [],
     alerts,
+    hardwareStatus,
+    diagnostics,
     conditionSummary,
     health,
     anomaly,

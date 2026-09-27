@@ -1,143 +1,214 @@
 // ============================================================================
-// sensorService.js — MechSight Sensor Ingestion & Stream Service
+// sensorService.js — Hardware Telemetry Pipeline & SSE Stream Service
 // ============================================================================
-// Ingestion pipeline for ESP32 Physical Sensors:
-// - DS18B20 Digital Temperature Sensor
-// - MPU6050 6-DOF I2C Accelerometer / Gyroscope (Vibration)
-// - Infrared Optical Sensor (RPM & Cycle Counting)
-// - Optional ACS712 Current Sensor
+// Talks directly to the MechSight backend API (/api/sensors/latest, /api/sensors/stream)
+// and handles real hardware packet ingestion & offline detection.
 // ============================================================================
 
 import { nextReading, initialReading } from '../data/simulatedData.js'
 
-export const REFRESH_INTERVAL_MS = 2500
+export const REFRESH_INTERVAL_MS = 1000
 
-// In-memory buffer for directly ingested readings from local network or tests
-let lastIngestedReading = null
-let lastIngestedTimestamp = 0
-
-/**
- * Validates sensor values against physical hardware boundaries to prevent corrupt data
- */
-export function validateSensorReading(raw) {
-  const flags = []
-  let isValid = true
-
-  // Temperature sanity check (DS18B20 range: -55°C to +125°C, motor operating range: 0°C to 110°C)
-  if (raw.temperature !== undefined) {
-    if (isNaN(raw.temperature) || raw.temperature < -20 || raw.temperature > 125) {
-      flags.push({ sensor: 'temperature', status: 'INVALID', reason: 'Out of realistic physical range' })
-      isValid = false
-    }
-  }
-
-  // Vibration sanity check (MPU6050: 0 to 16g)
-  if (raw.vibration !== undefined) {
-    if (isNaN(raw.vibration) || raw.vibration < 0 || raw.vibration > 25) {
-      flags.push({ sensor: 'vibration', status: 'INVALID', reason: 'Erratic accelerometer reading' })
-      isValid = false
-    }
-  }
-
-  // RPM sanity check (0 to 10,000 RPM)
-  if (raw.rpm !== undefined) {
-    if (isNaN(raw.rpm) || raw.rpm < 0 || raw.rpm > 12000) {
-      flags.push({ sensor: 'rpm', status: 'INVALID', reason: 'Optical pulse reading overflow' })
-      isValid = false
-    }
-  }
-
-  return { isValid, flags }
-}
+// In-Memory cache for latest received real hardware packet
+let latestHardwareReading = null
+let lastHardwareTimestamp = 0
 
 /**
- * Ingests a reading payload directly (e.g. from an ESP32 HTTP POST / Webhook)
+ * Connects to Server-Sent Events stream (/api/sensors/stream) for zero-latency live updates
  */
-export function ingestReading(payload) {
-  const validation = validateSensorReading(payload)
-  if (!validation.isValid) {
-    console.warn('Sensor data validation warnings:', validation.flags)
-  }
+export function initHardwareSSE(onReadingUpdate, onStatusChange) {
+  let eventSource = null
 
-  lastIngestedReading = {
-    ...payload,
-    timestamp: payload.timestamp || new Date().toISOString(),
-    source: 'live',
-  }
-  lastIngestedTimestamp = Date.now()
-  return lastIngestedReading
-}
+  try {
+    eventSource = new EventSource('/api/sensors/stream')
 
-/**
- * Fetches the latest reading from an ESP32 hardware endpoint.
- * If endpoint fails, falls back safely to simulated data to preserve dashboard continuity.
- */
-async function fetchLiveReading(endpointUrl, assetTypeKey, demoState, prevReading) {
-  // If recent data was ingested directly in the last 6 seconds, use it
-  if (lastIngestedReading && Date.now() - lastIngestedTimestamp < 6000) {
-    return lastIngestedReading
-  }
-
-  if (endpointUrl && endpointUrl.startsWith('http')) {
-    try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 1800)
-
-      const response = await fetch(endpointUrl, {
-        method: 'GET',
-        headers: { 'Accept': 'application/json' },
-        signal: controller.signal,
-      })
-      clearTimeout(timeoutId)
-
-      if (response.ok) {
-        const json = await response.json()
-        const validated = validateSensorReading(json)
-        if (validated.isValid) {
-          return {
-            ...json,
-            timestamp: json.timestamp || new Date().toISOString(),
-            source: 'live',
-          }
-        }
+    eventSource.addEventListener('reading', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        latestHardwareReading = data
+        lastHardwareTimestamp = Date.now()
+        if (onReadingUpdate) onReadingUpdate(data)
+        if (onStatusChange) onStatusChange({ isOnline: true, lastReceivedAgo: 0 })
+      } catch (e) {
+        console.error('[SSE] Failed to parse reading event:', e)
       }
-    } catch (e) {
-      // Hardware temporarily unreachable — proceed to fallback below
+    })
+
+    eventSource.addEventListener('connected', () => {
+      console.log('[SSE] Stream connected to MechSight backend.')
+    })
+
+    eventSource.onerror = () => {
+      // Backend temporarily offline
+      if (onStatusChange) onStatusChange({ isOnline: false })
     }
+  } catch (err) {
+    console.warn('[SSE] EventSource unavailable:', err)
   }
 
-  // Fallback to simulated reading
-  return nextReading(assetTypeKey, demoState, prevReading)
+  return () => {
+    if (eventSource) {
+      eventSource.close()
+    }
+  }
 }
 
 /**
- * Starts a continuous reading stream for the active asset.
+ * Fetches the latest real hardware reading directly from the backend
+ */
+export async function fetchLatestHardwareReading(assetId = 'MOTOR-001') {
+  try {
+    const res = await fetch(`/api/sensors/latest?assetId=${encodeURIComponent(assetId)}`)
+    if (res.ok) {
+      const data = await res.json()
+      if (data.latest) {
+        latestHardwareReading = data.latest
+        lastHardwareTimestamp = Date.now() - (data.secondsAgo * 1000 || 0)
+      }
+      return data
+    }
+  } catch (e) {
+    // Backend offline or unreachable
+  }
+  return {
+    latest: latestHardwareReading,
+    isOnline: false,
+    secondsAgo: latestHardwareReading ? Math.round((Date.now() - lastHardwareTimestamp) / 1000) : null,
+    statusText: '🔴 HARDWARE OFFLINE',
+    totalRecords: 0,
+  }
+}
+
+/**
+ * Fetches real historical records from the backend database
+ */
+export async function fetchHardwareHistory(assetId = 'MOTOR-001', range = 'all') {
+  try {
+    const res = await fetch(`/api/sensors/history?assetId=${encodeURIComponent(assetId)}&range=${encodeURIComponent(range)}`)
+    if (res.ok) {
+      const data = await res.json()
+      return data.records || []
+    }
+  } catch (e) {
+    console.warn('[API] Could not fetch real history:', e)
+  }
+  return []
+}
+
+/**
+ * Fetches real sessions from backend database
+ */
+export async function fetchHardwareSessions(assetId = 'MOTOR-001') {
+  try {
+    const res = await fetch(`/api/sensors/sessions?assetId=${encodeURIComponent(assetId)}`)
+    if (res.ok) {
+      const data = await res.json()
+      return data.sessions || []
+    }
+  } catch (e) {
+    console.warn('[API] Could not fetch real sessions:', e)
+  }
+  return []
+}
+
+/**
+ * Fetches real anomalies from backend database
+ */
+export async function fetchHardwareAnomalies(assetId = 'MOTOR-001') {
+  try {
+    const res = await fetch(`/api/anomalies?assetId=${encodeURIComponent(assetId)}`)
+    if (res.ok) {
+      const data = await res.json()
+      return data.anomalies || []
+    }
+  } catch (e) {
+    console.warn('[API] Could not fetch real anomalies:', e)
+  }
+  return []
+}
+
+/**
+ * Fetches device diagnostics
+ */
+export async function fetchDeviceDiagnostics() {
+  try {
+    const res = await fetch('/api/device/status')
+    if (res.ok) {
+      return await res.json()
+    }
+  } catch (e) {
+    // offline
+  }
+  return null
+}
+
+/**
+ * Starts continuous telemetry polling / stream
  */
 export function startReadingStream({
   assetTypeKey,
   demoState,
-  source = 'demo',
-  endpointUrl = '',
+  source = 'live',
   onReading,
+  onDeviceStatus,
 }) {
   let prev = initialReading(assetTypeKey, demoState)
-  onReading(prev)
 
-  const interval = setInterval(async () => {
-    try {
-      let reading
-      if (source === 'live') {
-        reading = await fetchLiveReading(endpointUrl, assetTypeKey, demoState, prev)
-      } else {
-        reading = nextReading(assetTypeKey, demoState, prev)
-      }
-      prev = reading
-      onReading(reading)
-    } catch (err) {
+  if (source === 'demo') {
+    onReading(prev)
+    const interval = setInterval(() => {
       prev = nextReading(assetTypeKey, demoState, prev)
       onReading(prev)
+    }, REFRESH_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }
+
+  // REAL HARDWARE MODE
+  // 1. Initial fetch from API
+  fetchLatestHardwareReading().then(res => {
+    if (res.latest) {
+      onReading(res.latest)
+    }
+    if (onDeviceStatus) {
+      onDeviceStatus({
+        isOnline: res.isOnline,
+        secondsAgo: res.secondsAgo,
+        statusText: res.statusText,
+      })
+    }
+  })
+
+  // 2. Continuous fallback polling and status check every 1s
+  const interval = setInterval(async () => {
+    const res = await fetchLatestHardwareReading()
+    if (res.latest) {
+      onReading(res.latest)
+    }
+    if (onDeviceStatus) {
+      onDeviceStatus({
+        isOnline: res.isOnline,
+        secondsAgo: res.secondsAgo,
+        statusText: res.statusText,
+      })
     }
   }, REFRESH_INTERVAL_MS)
 
-  return () => clearInterval(interval)
+  // 3. SSE Stream setup
+  const closeSSE = initHardwareSSE(
+    (reading) => onReading(reading),
+    (status) => {
+      if (onDeviceStatus) {
+        onDeviceStatus({
+          isOnline: status.isOnline,
+          secondsAgo: status.lastReceivedAgo || 0,
+          statusText: status.isOnline ? '🟢 REAL HARDWARE CONNECTED' : '🔴 HARDWARE OFFLINE',
+        })
+      }
+    }
+  )
+
+  return () => {
+    clearInterval(interval)
+    closeSSE()
+  }
 }

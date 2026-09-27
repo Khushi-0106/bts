@@ -1,0 +1,75 @@
+{
+  "records": [
+    {
+      "id": "rec_1790536666916_w86q",
+      "assetId": "MOTOR-001",
+      "deviceId": "ESP32-001",
+      "timestamp": "2026-09-27T19:17:46.906Z",
+      "temperature": 34.6,
+      "rotationDetected": false,
+      "rpm": 285,
+      "cycleCount": 12482,
+      "vibration": null,
+      "current": null,
+      "voltage": null,
+      "healthScore": 100,
+      "anomalyScore": 0,
+      "anomalyStatus": "NORMAL",
+      "operatingState": "RUNNING",
+      "dataSource": "REAL_SENSOR",
+      "sensorStatus": {
+        "ds18b20": "CONNECTED",
+        "irSensor": "CONNECTED",
+        "mpu6050": "NOT_CONNECTED",
+        "currentSensor": "UNAVAILABLE",
+        "voltageSensor": "UNAVAILABLE"
+      }
+    }
+  ],
+  "sessions": [
+    {
+      "id": "SES-20260927-6918",
+      "assetId": "MOTOR-001",
+      "deviceId": "ESP32-001",
+      "startTime": "2026-09-27T19:17:46.906Z",
+      "endTime": null,
+      "status": "ACTIVE",
+      "totalRuntime": 0,
+      "totalCyclesStart": 12482,
+      "totalCycles": 0,
+      "minConditions": {
+        "temperature": 34.6,
+        "rpm": 285,
+        "vibration": null
+      },
+      "maxConditions": {
+        "temperature": 34.6,
+        "rpm": 285,
+        "vibration": null
+      },
+      "avgConditions": {
+        "temperature": 34.6,
+        "rpm": 285,
+        "vibration": null
+      },
+      "tempSamples": [
+        34.6
+      ],
+      "rpmSamples": [
+        285
+      ],
+      "anomaliesCount": 0,
+      "finalHealthScore": 100,
+      "finalMachineState": "RUNNING"
+    }
+  ],
+  "anomalies": [],
+  "events": [],
+  "stats": {
+    "totalPacketsReceived": 1,
+    "totalPacketsAccepted": 1,
+    "totalPacketsRejected": 0,
+    "lastPacketTimestamp": "2026-09-27T19:17:46.906Z",
+    "activeDeviceId": "ESP32-001"
+  }
+}
